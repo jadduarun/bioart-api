@@ -3,10 +3,11 @@ import bcrypt from "bcryptjs";
 import User from "../models/User.js";
 
 const generateAccessToken = (user) =>
-    jwt.sign({ id: user._id }, process.env.JWT_SECRET, { expiresIn: "1h" });
+    jwt.sign({ id: user._id }, process.env.JWT_SECRET, { expiresIn: "15m" });
+
 
 const generateRefreshToken = (user) =>
-    jwt.sign({ id: user._id }, process.env.JWT_REFRESH_SECRET, { expiresIn: "30d" });
+    jwt.sign({ id: user._id }, process.env.JWT_REFRESH_SECRET, { expiresIn: "7d" });
 
 export const register = async (req, res) => {
     const { email, password } = req.body;
@@ -19,6 +20,7 @@ export const register = async (req, res) => {
 export const login = async (req, res) => {
     const { email, password } = req.body;
     const user = await User.findOne({ email });
+
     if (!user || !(await bcrypt.compare(password, user.password)))
         return res.status(401).json({ message: "Invalid credentials" });
 
@@ -28,33 +30,50 @@ export const login = async (req, res) => {
     user.refreshToken = refreshToken;
     await user.save();
 
-    res.json({ accessToken, refreshToken });
+    res.cookie("refreshToken", refreshToken, {
+        httpOnly: true,
+        secure: true,
+        sameSite: "Strict",
+        maxAge: 7 * 24 * 60 * 60 * 1000,
+    });
+
+    res.json({ accessToken });
 };
 
 export const refresh = async (req, res) => {
-    const { refreshToken } = req.body;
-    if (!refreshToken) return res.status(401).json({ message: "No token" });
+    const token = req.cookies.refreshToken;
+
+    if (!token) return res.status(401).json({ message: "No token" });
 
     try {
-        const payload = jwt.verify(refreshToken, process.env.JWT_REFRESH_SECRET);
+        const payload = jwt.verify(token, process.env.JWT_REFRESH_SECRET);
         const user = await User.findById(payload.id);
-        if (!user || user.refreshToken !== refreshToken)
+        if (!user || user.refreshToken !== token)
             return res.status(403).json({ message: "Invalid refresh token" });
 
         const newAccessToken = generateAccessToken(user);
         res.json({ accessToken: newAccessToken });
     } catch {
-        res.status(403).json({ message: "Invalid token" });
+        res.status(403).json({ message: "Expired or invalid refresh token" });
     }
 };
 
 export const logout = async (req, res) => {
-    const { refreshToken } = req.body;
-    const user = await User.findOne({ refreshToken });
-    if (user) {
-        user.refreshToken = null;
-        await user.save();
+    const token = req.cookies.refreshToken;
+    if (token) {
+        const user = await User.findOne({ refreshToken: token });
+        if (user) {
+            user.refreshToken = null;
+            await user.save();
+        }
     }
+
+    res.clearCookie("refreshToken", {
+        httpOnly: true,
+        secure: true,
+        sameSite: "Strict",
+    });
+
     res.json({ message: "Logged out" });
 };
 
