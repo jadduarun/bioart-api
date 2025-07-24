@@ -3,6 +3,7 @@ import cors from "cors";
 import dotenv from "dotenv";
 import connectDB from "./config/db.js";
 import authRoutes from "./routes/authRoutes.js";
+import shopifyRoutes from './routes/shopifyRoutes.js';
 import cookieParser from 'cookie-parser';
 
 dotenv.config();
@@ -17,6 +18,7 @@ app.use(express.json());
 app.use(cookieParser());
 
 app.use("/api", authRoutes);
+app.use('/api/shopify', shopifyRoutes);
 
 connectDB();
 
