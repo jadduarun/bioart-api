@@ -1,6 +1,7 @@
 import jwt from "jsonwebtoken";
 import bcrypt from "bcryptjs";
 import User from "../models/User.js";
+import RefreshToken from "../models/RefreshToken.js";
 
 const generateAccessToken = (user) =>
     jwt.sign({ id: user._id }, process.env.JWT_SECRET, { expiresIn: "15m" });
@@ -19,13 +20,19 @@ export const register = async (req, res) => {
 export const login = async (req, res) => {
     const { email, password } = req.body;
     const user = await User.findOne({ email });
-
-    if (!user || !(await bcrypt.compare(password, user.password))) {
+    if (!user || !(await bcrypt.compare(password, user.password)))
         return res.status(401).json({ message: "Invalid credentials" });
-    }
 
     const accessToken = generateAccessToken(user);
     const refreshToken = generateRefreshToken(user);
+
+    await RefreshToken.create({
+        userId: user._id,
+        token: refreshToken,
+        userAgent: req.headers["user-agent"],
+        ip: req.ip,
+        expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+    });
 
     res.cookie("refreshToken", refreshToken, {
         httpOnly: true,
@@ -39,11 +46,13 @@ export const login = async (req, res) => {
 
 export const refresh = async (req, res) => {
     const token = req.cookies?.refreshToken;
-
     if (!token) return res.status(401).json({ message: "No refresh token found" });
 
     try {
         const payload = jwt.verify(token, process.env.JWT_REFRESH_SECRET);
+        const savedToken = await RefreshToken.findOne({ token });
+        if (!savedToken) return res.status(403).json({ message: "Token not found in DB" });
+
         const user = await User.findById(payload.id);
         if (!user) return res.status(404).json({ message: "User not found" });
 
@@ -55,6 +64,11 @@ export const refresh = async (req, res) => {
 };
 
 export const logout = async (req, res) => {
+    const token = req.cookies?.refreshToken;
+    if (token) {
+        await RefreshToken.deleteOne({ token });
+    }
+
     res.clearCookie("refreshToken", {
         httpOnly: true,
         secure: true,
@@ -66,7 +80,6 @@ export const logout = async (req, res) => {
 
 export const protectedRoute = async (req, res) => {
     const authHeader = req.headers.authorization;
-
     if (!authHeader) return res.status(403).json({ message: "No token provided" });
 
     const token = authHeader.split(" ")[1];
