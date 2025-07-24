@@ -25,6 +25,7 @@
     "cookie-parser": "^1.4.7",
     "cookie-signature": "^1.2.2",
     "cors": "^2.8.5",
+    "crypto": "^1.0.1",
     "debug": "^4.4.1",
     "depd": "^2.0.0",
     "dotenv": "^17.2.0",

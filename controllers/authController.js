@@ -1,13 +1,15 @@
 import jwt from "jsonwebtoken";
 import bcrypt from "bcryptjs";
+import crypto from "crypto";
 import User from "../models/User.js";
-import RefreshToken from "../models/RefreshToken.js";
+import Session from "../models/Session.js";
 
 const generateAccessToken = (user) =>
     jwt.sign({ id: user._id }, process.env.JWT_SECRET, { expiresIn: "15m" });
 
-const generateRefreshToken = (user) =>
-    jwt.sign({ id: user._id }, process.env.JWT_REFRESH_SECRET, { expiresIn: "7d" });
+const generateTokenId = () => crypto.randomBytes(32).toString("hex");
+
+const hashToken = (tokenId) => crypto.createHash("sha256").update(tokenId).digest("hex");
 
 export const register = async (req, res) => {
     const { email, password } = req.body;
@@ -20,73 +22,81 @@ export const register = async (req, res) => {
 export const login = async (req, res) => {
     const { email, password } = req.body;
     const user = await User.findOne({ email });
-    if (!user || !(await bcrypt.compare(password, user.password)))
+
+    if (!user || !(await bcrypt.compare(password, user.password))) {
         return res.status(401).json({ message: "Invalid credentials" });
+    }
 
-    const accessToken = generateAccessToken(user);
-    const refreshToken = generateRefreshToken(user);
+    const tokenId = generateTokenId();
+    const tokenHash = hashToken(tokenId);
 
-    await RefreshToken.create({
-        userId: user._id,
-        token: refreshToken,
-        userAgent: req.headers["user-agent"],
-        ip: req.ip,
-        expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
-    });
+    await Session.create({ userId: user._id, tokenHash });
 
-    res.cookie("refreshToken", refreshToken, {
+    res.cookie("session", tokenId, {
         httpOnly: true,
         secure: true,
         sameSite: "Strict",
         maxAge: 7 * 24 * 60 * 60 * 1000,
     });
 
+    const accessToken = generateAccessToken(user);
     res.json({ accessToken });
 };
 
 export const refresh = async (req, res) => {
-    const token = req.cookies?.refreshToken;
-    if (!token) return res.status(401).json({ message: "No refresh token found" });
+    const sessionId = req.cookies?.session;
+    if (!sessionId) return res.status(401).json({ message: "No session ID" });
 
-    try {
-        const payload = jwt.verify(token, process.env.JWT_REFRESH_SECRET);
-        const savedToken = await RefreshToken.findOne({ token });
-        if (!savedToken) return res.status(403).json({ message: "Token not found in DB" });
+    const hashed = hashToken(sessionId);
+    const session = await Session.findOne({ tokenHash: hashed });
 
-        const user = await User.findById(payload.id);
-        if (!user) return res.status(404).json({ message: "User not found" });
+    if (!session) return res.status(403).json({ message: "Invalid session" });
 
-        const newAccessToken = generateAccessToken(user);
-        res.json({ accessToken: newAccessToken });
-    } catch {
-        return res.status(403).json({ message: "Invalid or expired refresh token" });
-    }
+    const user = await User.findById(session.userId);
+    if (!user) return res.status(404).json({ message: "User not found" });
+
+    await Session.deleteOne({ _id: session._id });
+
+    const newTokenId = generateTokenId();
+    const newHash = hashToken(newTokenId);
+    await Session.create({ userId: user._id, tokenHash: newHash });
+
+    res.cookie("session", newTokenId, {
+        httpOnly: true,
+        secure: true,
+        sameSite: "Strict",
+        maxAge: 7 * 24 * 60 * 60 * 1000,
+    });
+
+    const newAccessToken = generateAccessToken(user);
+    res.json({ accessToken: newAccessToken });
 };
 
 export const logout = async (req, res) => {
-    const token = req.cookies?.refreshToken;
-    if (token) {
-        await RefreshToken.deleteOne({ token });
+    const sessionId = req.cookies?.session;
+    if (sessionId) {
+        const tokenHash = hashToken(sessionId);
+        await Session.deleteOne({ tokenHash });
     }
 
-    res.clearCookie("refreshToken", {
+    res.clearCookie("session", {
         httpOnly: true,
         secure: true,
         sameSite: "Strict",
     });
 
-    res.json({ message: "Logged out successfully" });
+    res.json({ message: "Logged out" });
 };
 
 export const protectedRoute = async (req, res) => {
     const authHeader = req.headers.authorization;
-    if (!authHeader) return res.status(403).json({ message: "No token provided" });
+    if (!authHeader) return res.status(403).json({ message: "No token" });
 
     const token = authHeader.split(" ")[1];
     try {
         const payload = jwt.verify(token, process.env.JWT_SECRET);
         res.json({ message: "Protected content", userId: payload.id });
     } catch {
-        res.status(403).json({ message: "Invalid or expired access token" });
+        res.status(403).json({ message: "Invalid or expired token" });
     }
 };
